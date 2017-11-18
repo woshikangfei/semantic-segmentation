@@ -17,6 +17,13 @@ if not tf.test.gpu_device_name():
 else:
     print('Default GPU Device: {}'.format(tf.test.gpu_device_name()))
 
+    
+    
+KEEP_PROB = 0.75
+BATCH_SIZE = 8
+EPOCHS = 5
+LEARNING_RATE = 0.0001
+NORM_STDDEV = 0.01
 
 def load_vgg(sess, vgg_path):
     """
@@ -35,8 +42,7 @@ def load_vgg(sess, vgg_path):
     vgg_layer7_out_tensor_name = 'layer7_out:0'
 
     tf.saved_model.loader.load(sess, [vgg_tag], vgg_path)
-    vgg_graph = tf.get_default_graph()
-
+    
     image_input = vgg_graph.get_tensor_by_name(vgg_input_tensor_name)
     keep_prob_tensor = vgg_graph.get_tensor_by_name(vgg_keep_prob_tensor_name)
     layer3_out_tensor = vgg_graph.get_tensor_by_name(vgg_layer3_out_tensor_name)
@@ -59,31 +65,35 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     :return: The Tensor for the last layer of output
     """
    
+    kernel_initializer = tf.truncated_normal_initializer(stddev = NORM_STDDEV)
     # 1x1 Convolution on VGG layer 7 (top)
-    layer_1_1 = tf.layers.conv2d(vgg_layer7_out, num_classes, kernel_size=(1, 1), strides=(1, 1), name='layer_1_1')
+    conv_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, padding='same', strides=(1,1),
+                                 kernel_initializer= kernel_initializer)
 
     # Deconvolution
-    deconv_layer_1 = tf.layers.conv2d_transpose(layer_1_1, num_classes, kernel_size=(4, 4), strides=(2, 2), padding='same', name='deconv_layer_1')
+    decode_layer_1 = tf.layers.conv2d_transpose(conv_1x1, num_classes, 4, strides=(2,2), padding='same', kernel_initializer= kernel_initializer)
 
     # 1x1 Convolution on VGG layer 4
-    layer_1_2 = tf.layers.conv2d(vgg_layer4_out, num_classes, kernel_size=(1, 1), strides=(1, 1), name='layer_1_2')
+    vgg_layer4_1x1 = tf.layers.conv2d(vgg_layer4_out, num_classes, 1, padding='same', strides=(1,1),
+                                 kernel_initializer= kernel_initializer)
 
     # Add Skip connection from 1x1 conv of VGG layer 4 to our previous deconv layer
-    skip_1 = tf.add(deconv_layer_1, layer_1_2, name='skip_1')
+    decode_layer_1_with_skip = tf.add(decode_layer_1, vgg_layer4_1x1)
 
     # Deconvolution
-    deconv_layer_2 = tf.layers.conv2d_transpose(skip_1, num_classes, kernel_size=(4, 4), strides=(2, 2), padding='same', name='deconv_layer_2')
+    decode_layer_2 = tf.layers.conv2d_transpose(decode_layer_1_with_skip, num_classes, 4, strides=(2,2), padding='same', kernel_initializer= kernel_initializer)
 
     # 1x1 Convolution
-    layer_1_3 = tf.layers.conv2d(vgg_layer3_out, num_classes, kernel_size=(1, 1), strides=(1, 1), name='layer_1_3')
+    vgg_layer3_1x1 = tf.layers.conv2d(vgg_layer3_out, num_classes, 1, padding='same', strides=(1,1),
+                                 kernel_initializer= kernel_initializer)
 
     # Add Skip connection from 1x1 conv of VGG layer 3 to our previous deconv layer
-    skip_2 = tf.add(deconv_layer_2, layer_1_3, name='skip_2')
+    decode_layer_2_with_skip = tf.add(decode_layer_2, vgg_layer3_1x1)
 
     # Deconvolution
-    deconv_layer_3 = tf.layers.conv2d_transpose(skip_2, num_classes, kernel_size=(16, 16), strides=(8, 8), padding='same', name='deconv_layer_3')
+    decoder_output = tf.layers.conv2d_transpose(decode_layer_2_with_skip, num_classes, 16, strides=(8,8), padding='same', kernel_initializer= kernel_initializer)
 
-    return deconv_layer_3
+    return decoder_output
 tests.test_layers(layers)
 
 
@@ -123,25 +133,18 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     :param keep_prob: TF Placeholder for dropout keep probability
     :param learning_rate: TF Placeholder for learning rate
     """
-    rate = 0.0005
-    dropout = 0.8
-    display_step = 50
+    ess.run(tf.global_variables_initializer())
 
-    for e in range(epochs):
-        step = 0
-        for images, labels in get_batches_fn(batch_size):
-
-            sess.run(train_op, feed_dict={input_image: images,
-                                          correct_label: labels,
-                                          keep_prob: dropout,
-                                          learning_rate: rate})
-
-            if step % display_step == 0:
-                loss = sess.run(cross_entropy_loss, feed_dict={input_image: images,
-                                                               correct_label: labels,
-                                                               keep_prob: 1.0})
-                print("Epoch: " + str(e) + " Iter: " + str(step) + " Loss: {:.6f}".format(loss))
-            step += 1
+    for i in range(epochs):
+        print("EPOCH {} ...".format(i+1))
+        j = 0
+        for image, label in get_batches_fn(batch_size):
+            print("Batch {} ".format(j+1))
+            j += 1
+            sess.run(train_op, feed_dict={input_image: image, correct_label: label, keep_prob: KEEP_PROB, learning_rate:  LEARNING_RATE})
+            
+            
+            
 tests.test_train_nn(train_nn)
  
 def run():
@@ -160,10 +163,20 @@ def run():
     # You'll need a GPU with at least 10 teraFLOPS to train on.
     #  https://www.cityscapes-dataset.com/
 
-    correct_label = tf.placeholder(tf.float32, [None, image_shape[0], image_shape[1], num_classes])
-    learning_rate = tf.placeholder(tf.float32)
-    keep_prob = tf.placeholder(tf.float32)
-    clip = VideoFileClip('driving.mp4')
+     # Define Hyper-parameters
+    epochs = EPOCHS
+    batch_size = BATCH_SIZE
+
+    # Define TF Placeholders
+    correct_label = tf.placeholder(tf.float32, (None,image_shape[0],image_shape[1],2))
+    learning_rate = tf.placeholder(tf.float32, (None))
+    
+    # Download pretrained vgg model
+    helper.maybe_download_pretrained_vgg(data_dir)
+
+    # OPTIONAL: Train and Inference on the cityscapes dataset instead of the Kitti dataset.
+    # You'll need a GPU with at least 10 teraFLOPS to train on.
+    #  https://www.cityscapes-dataset.com/
 
     with tf.Session() as sess:
         # Path to vgg model
@@ -175,26 +188,23 @@ def run():
         #  https://datascience.stackexchange.com/questions/5224/how-to-prepare-augment-images-for-neural-network
 
         # Build NN using load_vgg, layers, and optimize function
-        # Build NN using load_vgg, layers, and optimize function
-        image_input_tensor, keep_prob, l3_tensor, l4_tensor, l7_tensor = load_vgg(sess, vgg_path)
-        output_tensor = layers(l3_tensor, l4_tensor, l7_tensor, num_classes)
-        logits, train_op, cross_entropy_loss = optimize(output_tensor, correct_label, learning_rate, num_classes)
+
+        # Load VGG and get the different layers
+        input_tensor, keep_prob_tensor, layer3_tensor, layer4_tensor, layer7_tensor = load_vgg(sess, vgg_path)
+
+        # Create the layers for a fully convolutional network and get the final decoder layer
+        nn_last_layer = layers(layer3_tensor,layer4_tensor,layer7_tensor, num_classes)
+
+        # Create Optimizer
+        logits, train_op, cross_entropy_loss =  optimize(nn_last_layer, correct_label, learning_rate, num_classes)
 
         # Train NN using the train_nn function
-        sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
-        train_result = train_nn(sess,
-                 epochs,
-                 batch_size,
-                 get_batches_fn,
-                 train_op,
-                 cross_entropy_loss,
-                 image_input_tensor,
-                 correct_label,
-                 keep_prob,
-                 learning_rate)
+        train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_tensor
+                 , correct_label, keep_prob_tensor, learning_rate)
 
         # Save inference data using helper.save_inference_samples
-        helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input_tensor)
+        helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob_tensor, input_tensor)
+
 
 
         # OPTIONAL: Apply the trained model to a video
